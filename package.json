@@ -46,7 +46,7 @@
     "test": "echo 'No tests specified'",
     "postinstall": "node scripts/postinstall.js",
     "prepublishOnly": "npm run clean && npm run build",
-    "postbuild": "cp -r src/generators/init/files-* dist/generators/init/"
+    "postbuild": "cp -r src/generators/init/files-* dist/generators/init/ && cp src/generators/init/schema.json dist/generators/init/"
   },
   "devDependencies": {
     "@types/node": "^24.0.13",
