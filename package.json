@@ -1,6 +1,6 @@
 {
   "name": "nx-cache-server-custom",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Nx plugin for generating cache servers with GCP and AWS backends",
   "main": "dist/src/index.js",
   "type": "commonjs",
