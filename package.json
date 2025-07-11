@@ -23,6 +23,15 @@
     "url": "https://github.com/Kamalesh-Seervi/nx-custom-cache-server/issues"
   },
   "homepage": "https://github.com/Kamalesh-Seervi/nx-custom-cache-server#readme",
+  "files": [
+    "dist/",
+    "scripts/",
+    "generators.json",
+    "executors.json",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "peerDependencies": {
     "@nx/devkit": ">=16.0.0"
   },
@@ -35,6 +44,7 @@
     "clean": "rm -rf dist",
     "lint": "echo 'Linting passed - no linter configured'",
     "test": "echo 'No tests specified'",
+    "postinstall": "node scripts/postinstall.js",
     "prepublishOnly": "npm run clean && npm run build",
     "postbuild": "cp -r src/generators/init/files-* dist/generators/init/"
   },
