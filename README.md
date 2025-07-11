@@ -1,6 +1,6 @@
-# nx-custom-cache-server
+# nx-cache-server-custom
 
-[![npm version](https://badge.fury.io/js/%40nx-cache%2Fserver-plugin.svg)](https://www.npmjs.com/package/nx-custom-cache-server)
+[![npm version](https://badge.fury.io/js/%40nx-cache%2Fserver-plugin.svg)](https://www.npmjs.com/package/nx-cache-server-custom)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > **Professional Nx plugin for generating high-performance cache servers with cloud storage backends**
@@ -11,10 +11,10 @@ Generate production-ready Nx cache servers with support for Google Cloud Storage
 
 ```bash
 # Install the plugin (with interactive setup)
-npm install --save-dev nx-custom-cache-server
+npm install --save-dev nx-cache-server-custom
 
 # Or generate directly
-npx nx g nx-custom-cache-server:init my-cache-server
+npx nx g nx-cache-server-custom:init my-cache-server
 ```
 
 **✨ New Feature**: After installation, you'll get an interactive prompt to set up your cache server immediately!
@@ -132,7 +132,7 @@ Nx cache servers act as remote storage for build artifacts, enabling teams to sh
 │                      Plugin Generator Workflow                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-npm install nx-custom-cache-server
+npm install nx-cache-server-custom
            │
            ▼
 ┌─────────────────────┐
@@ -143,7 +143,7 @@ npm install nx-custom-cache-server
            │                   │
            ▼                   │
 ┌─────────────────────┐        │    Direct Usage:
-│ User Input:         │        │    npx nx g nx-custom-cache-server:init
+│ User Input:         │        │    npx nx g nx-cache-server-custom:init
 │ • Project Name      │        │                │
 │ • Cloud Provider    │        │                ▼
 │ • Include Docker?   │◀───────┘    ┌─────────────────────┐
@@ -269,7 +269,7 @@ const metrics = {
 ## 📦 Installation
 
 ```bash
-npm install --save-dev nx-custom-cache-server
+npm install --save-dev nx-cache-server-custom
 ```
 
 ## 🛠️ Usage
@@ -278,10 +278,10 @@ npm install --save-dev nx-custom-cache-server
 
 ```bash
 # Interactive mode (recommended for first-time users)
-npx nx g nx-custom-cache-server:init
+npx nx g nx-cache-server-custom:init
 
 # Direct usage with options
-npx nx g nx-custom-cache-server:init my-cache-server --provider=gcp
+npx nx g nx-cache-server-custom:init my-cache-server --provider=gcp
 ```
 
 ### Command Options
@@ -299,20 +299,20 @@ npx nx g nx-custom-cache-server:init my-cache-server --provider=gcp
 
 ```bash
 # GCP with all features (default)
-npx nx g nx-custom-cache-server:init my-gcp-cache
+npx nx g nx-cache-server-custom:init my-gcp-cache
 
 # AWS without Docker
-npx nx g nx-custom-cache-server:init my-aws-cache \
+npx nx g nx-cache-server-custom:init my-aws-cache \
   --provider=aws \
   --includeDocker=false
 
 # Minimal setup for development
-npx nx g nx-custom-cache-server:init dev-cache \
+npx nx g nx-cache-server-custom:init dev-cache \
   --includeMetrics=false \
   --includeDocker=false
 
 # Custom directory with tags
-npx nx g nx-custom-cache-server:init prod-cache \
+npx nx g nx-cache-server-custom:init prod-cache \
   --directory=backend \
   --tags=cache,backend,production
 ```
