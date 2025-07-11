@@ -1,0 +1,536 @@
+const express = require('express');<% if (includeMetrics) { %>
+const promClient = require('prom-client');<% } %>
+const pino = require('pino');
+const { S3Client, GetObjectCommand, HeadObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+
+// Initialize logger
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  transport: {
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      translateTime: 'SYS:standard',
+    }
+  }
+});
+
+<% if (includeMetrics) { %>
+// Initialize Prometheus metrics
+const register = promClient.register;
+promClient.collectDefaultMetrics({ register });
+
+// Custom metrics
+const httpRequestDuration = new promClient.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'Duration of HTTP requests in seconds',
+  labelNames: ['method', 'route', 'status_code'],
+  buckets: [0.1, 0.3, 0.5, 0.7, 1, 3, 5, 7, 10]
+});
+
+const httpRequestsTotal = new promClient.Counter({
+  name: 'http_requests_total',
+  help: 'Total number of HTTP requests',
+  labelNames: ['method', 'route', 'status_code']
+});
+
+const cacheOperationsTotal = new promClient.Counter({
+  name: 'cache_operations_total',
+  help: 'Total number of cache operations',
+  labelNames: ['operation', 'status']
+});
+
+const cacheArtifactSize = new promClient.Histogram({
+  name: 'cache_artifact_size_bytes',
+  help: 'Size of cache artifacts in bytes',
+  labelNames: ['operation'],
+  buckets: [1024, 10240, 102400, 1048576, 10485760, 104857600, 1073741824]
+});
+
+const authenticationAttempts = new promClient.Counter({
+  name: 'authentication_attempts_total',
+  help: 'Total number of authentication attempts',
+  labelNames: ['status']
+});
+
+const s3Operations = new promClient.Counter({
+  name: 's3_operations_total',
+  help: 'Total number of S3 operations',
+  labelNames: ['operation', 'status']
+});
+
+const errorCounter = new promClient.Counter({
+  name: 'errors_total',
+  help: 'Total number of errors',
+  labelNames: ['error_type', 'endpoint']
+});
+
+const activeConnections = new promClient.Gauge({
+  name: 'active_connections_total',
+  help: 'Number of active connections'
+});
+
+const concurrentOperations = new promClient.Gauge({
+  name: 'concurrent_operations_total',
+  help: 'Number of concurrent cache operations',
+  labelNames: ['operation']
+});
+
+const s3Latency = new promClient.Histogram({
+  name: 's3_operation_duration_seconds',
+  help: 'Duration of S3 operations in seconds',
+  labelNames: ['operation'],
+  buckets: [0.1, 0.5, 1, 2, 5, 10, 30]
+});
+
+// Register metrics
+[
+  httpRequestDuration,
+  httpRequestsTotal,
+  cacheOperationsTotal,
+  cacheArtifactSize,
+  authenticationAttempts,
+  s3Operations,
+  errorCounter,
+  activeConnections,
+  concurrentOperations,
+  s3Latency
+].forEach(metric => register.registerMetric(metric));
+<% } %>
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Environment variables
+const NX_CACHE_ACCESS_TOKEN = process.env.NX_CACHE_ACCESS_TOKEN;
+const AWS_REGION = process.env.AWS_REGION || 'us-east-1';
+const AWS_ACCESS_KEY_ID = process.env.AWS_ACCESS_KEY_ID;
+const AWS_SECRET_ACCESS_KEY = process.env.AWS_SECRET_ACCESS_KEY;
+const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME;
+const S3_ENDPOINT_URL = process.env.S3_ENDPOINT_URL;
+
+// Initialize S3 client
+const s3Client = new S3Client({
+  region: AWS_REGION,
+  ...(S3_ENDPOINT_URL && { endpoint: S3_ENDPOINT_URL }),
+  credentials: {
+    accessKeyId: AWS_ACCESS_KEY_ID,
+    secretAccessKey: AWS_SECRET_ACCESS_KEY,
+  },
+  forcePathStyle: true,
+});
+
+// Middleware
+app.use('/v1/cache', express.raw({ 
+  type: 'application/octet-stream', 
+  limit: '1gb' 
+}));
+
+<% if (includeMetrics) { %>
+// Request logging and metrics middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const route = req.route ? req.route.path : req.path;
+    const statusCode = res.statusCode.toString();
+    
+    httpRequestDuration
+      .labels(req.method, route, statusCode)
+      .observe(duration / 1000);
+    
+    httpRequestsTotal
+      .labels(req.method, route, statusCode)
+      .inc();
+    
+    logger.info({
+      method: req.method,
+      url: req.url,
+      status: res.statusCode,
+      duration: `${duration}ms`,
+      userAgent: req.get('User-Agent')
+    }, 'Request completed');
+  });
+  
+  next();
+});
+<% } %>
+
+// Authentication middleware
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {<% if (includeMetrics) { %>
+    authenticationAttempts.labels('unauthorized').inc();
+    errorCounter.labels('auth_missing_token', req.path).inc();<% } %>
+    
+    logger.warn({ 
+      ip: req.ip, 
+      url: req.url 
+    }, 'Unauthorized access attempt - missing or invalid bearer token');
+    
+    return res.status(401)
+      .type('text/plain')
+      .send('Unauthorized');
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  if (token !== NX_CACHE_ACCESS_TOKEN) {<% if (includeMetrics) { %>
+    authenticationAttempts.labels('forbidden').inc();
+    errorCounter.labels('auth_invalid_token', req.path).inc();<% } %>
+    
+    logger.warn({ 
+      ip: req.ip, 
+      url: req.url 
+    }, 'Access forbidden - invalid token');
+    
+    return res.status(403)
+      .type('text/plain')
+      .send('Access forbidden');
+  }
+
+<% if (includeMetrics) { %>  authenticationAttempts.labels('success').inc();<% } %>
+  next();
+};
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200)
+    .type('text/plain')
+    .send('OK');
+});
+
+<% if (includeMetrics) { %>
+// Metrics endpoint
+app.get('/metrics', async (req, res) => {
+  try {
+    res.set('Content-Type', register.contentType);
+    res.end(await register.metrics());
+  } catch (error) {
+    res.status(500).end(error);
+  }
+});
+<% } %>
+
+// PUT /v1/cache/:hash - upload cache artifact
+app.put('/v1/cache/:hash', authenticateToken, async (req, res) => {
+  const hash = req.params.hash;
+  const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
+  logger.info({ 
+    requestId, 
+    hash, 
+    contentLength: req.get('content-length') 
+  }, 'Starting cache upload');
+
+<% if (includeMetrics) { %>  cacheOperationsTotal.labels('upload', 'started').inc();
+  concurrentOperations.labels('upload').inc();<% } %>
+
+  try {
+    // Check if object already exists
+    try {<% if (includeMetrics) { %>
+      s3Operations.labels('head_object', 'started').inc();
+      const headStartTime = Date.now();<% } %>
+      
+      await s3Client.send(new HeadObjectCommand({
+        Bucket: S3_BUCKET_NAME,
+        Key: hash,
+      }));
+
+<% if (includeMetrics) { %>      s3Latency.labels('head_object').observe((Date.now() - headStartTime) / 1000);
+      s3Operations.labels('head_object', 'success').inc();
+      cacheOperationsTotal.labels('upload', 'conflict').inc();
+      errorCounter.labels('cache_exists', '/v1/cache/:hash').inc();<% } %>
+      
+      logger.warn({ requestId, hash }, 'Attempt to override existing cache record');
+      return res.status(409)
+        .type('text/plain')
+        .send('Cannot override an existing record');
+    } catch (error) {
+      if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
+        // Object doesn't exist, continue with upload<% if (includeMetrics) { %>
+        s3Operations.labels('head_object', 'not_found').inc();<% } %>
+      } else {<% if (includeMetrics) { %>
+        s3Operations.labels('head_object', 'error').inc();
+        errorCounter.labels('s3_head_object', '/v1/cache/:hash').inc();<% } %>
+        
+        logger.error({ 
+          requestId, 
+          hash, 
+          error: error.message 
+        }, 'Error checking object existence');
+        
+        return res.status(500)
+          .type('text/plain')
+          .send('Internal server error');
+      }
+    }
+
+    // Validate request body
+    if (!req.body || req.body.length === 0) {<% if (includeMetrics) { %>
+      cacheOperationsTotal.labels('upload', 'empty_body').inc();
+      errorCounter.labels('empty_body', '/v1/cache/:hash').inc();<% } %>
+      
+      logger.warn({ requestId, hash }, 'Empty request body');
+      return res.status(400)
+        .type('text/plain')
+        .send('Request body cannot be empty');
+    }
+
+<% if (includeMetrics) { %>    // Record artifact size
+    cacheArtifactSize.labels('upload').observe(req.body.length);<% } %>
+
+    // Upload to S3
+    try {<% if (includeMetrics) { %>
+      s3Operations.labels('put_object', 'started').inc();
+      const uploadStartTime = Date.now();<% } %>
+      
+      await s3Client.send(new PutObjectCommand({
+        Bucket: S3_BUCKET_NAME,
+        Key: hash,
+        Body: req.body,
+        ContentType: 'application/octet-stream',
+        CacheControl: 'public, max-age=31536000',
+      }));
+
+<% if (includeMetrics) { %>      s3Latency.labels('put_object').observe((Date.now() - uploadStartTime) / 1000);
+      s3Operations.labels('put_object', 'success').inc();
+      cacheOperationsTotal.labels('upload', 'success').inc();<% } %>
+
+      logger.info({ 
+        requestId, 
+        hash, 
+        size: req.body.length 
+      }, 'Cache artifact uploaded successfully');
+
+      return res.status(202)
+        .type('text/plain')
+        .send('Successfully uploaded');
+    } catch (error) {<% if (includeMetrics) { %>
+      s3Operations.labels('put_object', 'error').inc();
+      cacheOperationsTotal.labels('upload', 'error').inc();
+      errorCounter.labels('s3_upload', '/v1/cache/:hash').inc();<% } %>
+      
+      logger.error({ 
+        requestId, 
+        hash, 
+        error: error.message
+      }, 'Upload error');
+      
+      return res.status(500)
+        .type('text/plain')
+        .send('Internal server error');
+    }
+  } catch (error) {<% if (includeMetrics) { %>
+    cacheOperationsTotal.labels('upload', 'unexpected_error').inc();
+    errorCounter.labels('unexpected_upload', '/v1/cache/:hash').inc();<% } %>
+    
+    logger.error({ 
+      requestId, 
+      hash, 
+      error: error.message
+    }, 'Unexpected upload error');
+    
+    return res.status(500)
+      .type('text/plain')
+      .send('Internal server error');
+  } finally {<% if (includeMetrics) { %>
+    concurrentOperations.labels('upload').dec();<% } %>
+  }
+});
+
+// GET /v1/cache/:hash - download cache artifact
+app.get('/v1/cache/:hash', authenticateToken, async (req, res) => {
+  const hash = req.params.hash;
+  const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
+  logger.info({ requestId, hash }, 'Starting cache download');
+
+<% if (includeMetrics) { %>  cacheOperationsTotal.labels('download', 'started').inc();
+  concurrentOperations.labels('download').inc();<% } %>
+
+  try {
+    const command = new GetObjectCommand({
+      Bucket: S3_BUCKET_NAME,
+      Key: hash,
+    });
+
+    try {<% if (includeMetrics) { %>
+      s3Operations.labels('get_object_url', 'started').inc();
+      const urlStartTime = Date.now();<% } %>
+      
+      const url = await getSignedUrl(s3Client, command, {
+        expiresIn: 18000, // 5 hours
+      });
+
+<% if (includeMetrics) { %>      s3Latency.labels('get_object_url').observe((Date.now() - urlStartTime) / 1000);
+      s3Operations.labels('get_object_url', 'success').inc();<% } %>
+
+      const response = await fetch(url);
+
+      if (!response.ok) {<% if (includeMetrics) { %>
+        s3Operations.labels('get_object_fetch', 'error').inc();<% } %>
+        
+        logger.error({ 
+          requestId, 
+          hash, 
+          status: response.status,
+          statusText: response.statusText 
+        }, 'Download error');
+
+        await response.body?.cancel();
+
+        if (response.status === 404) {<% if (includeMetrics) { %>
+          cacheOperationsTotal.labels('download', 'not_found').inc();<% } %>
+          return res.status(404)
+            .type('text/plain')
+            .send('The record was not found');
+        }
+
+<% if (includeMetrics) { %>        cacheOperationsTotal.labels('download', 'forbidden').inc();<% } %>
+        return res.status(403)
+          .type('text/plain')
+          .send('Access forbidden');
+      }
+
+      const buffer = await response.arrayBuffer();
+      const uint8Array = new Uint8Array(buffer);
+
+<% if (includeMetrics) { %>      s3Operations.labels('get_object_fetch', 'success').inc();
+      cacheArtifactSize.labels('download').observe(uint8Array.length);
+      cacheOperationsTotal.labels('download', 'success').inc();<% } %>
+      
+      logger.info({ 
+        requestId, 
+        hash, 
+        size: uint8Array.length 
+      }, 'Cache artifact downloaded successfully');
+
+      res.set({
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': uint8Array.length,
+        'Cache-Control': 'public, max-age=31536000'
+      });
+
+      res.send(Buffer.from(uint8Array));
+    } catch (error) {
+      if (error.name === 'NoSuchKey') {<% if (includeMetrics) { %>
+        cacheOperationsTotal.labels('download', 'not_found').inc();<% } %>
+        
+        logger.info({ requestId, hash }, 'Cache record not found');
+        return res.status(404)
+          .type('text/plain')
+          .send('The record was not found');
+      }
+
+<% if (includeMetrics) { %>      s3Operations.labels('get_object', 'error').inc();
+      cacheOperationsTotal.labels('download', 'error').inc();
+      errorCounter.labels('s3_download', '/v1/cache/:hash').inc();<% } %>
+      
+      logger.error({ 
+        requestId, 
+        hash, 
+        error: error.message 
+      }, 'Download error');
+      
+      return res.status(500)
+        .type('text/plain')
+        .send('Internal server error');
+    }
+  } catch (error) {<% if (includeMetrics) { %>
+    cacheOperationsTotal.labels('download', 'unexpected_error').inc();
+    errorCounter.labels('unexpected_download', '/v1/cache/:hash').inc();<% } %>
+    
+    logger.error({ 
+      requestId, 
+      hash, 
+      error: error.message
+    }, 'Unexpected download error');
+    
+    return res.status(500)
+      .type('text/plain')
+      .send('Internal server error');
+  } finally {<% if (includeMetrics) { %>
+    concurrentOperations.labels('download').dec();<% } %>
+  }
+});
+
+// Error handlers
+app.use((err, req, res, next) => {
+  const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
+<% if (includeMetrics) { %>  errorCounter.labels('unhandled_error', req.path).inc();<% } %>
+  
+  logger.error({ 
+    requestId,
+    error: err.message,
+    stack: err.stack,
+    url: req.url,
+    method: req.method
+  }, 'Unhandled error');
+  
+  if (!res.headersSent) {
+    res.status(500)
+      .type('text/plain')
+      .send('Internal Server Error');
+  }
+});
+
+app.use((req, res) => {
+  logger.warn({ 
+    url: req.url, 
+    method: req.method,
+    ip: req.ip 
+  }, 'Route not found');
+  
+  res.status(404)
+    .type('text/plain')
+    .send('Not Found');
+});
+
+// Start server
+app.listen(PORT, () => {
+  logger.info({ 
+    port: PORT,
+    region: AWS_REGION,
+    bucketName: S3_BUCKET_NAME,
+    nodeEnv: process.env.NODE_ENV || 'development'
+  }, '<%= className %> cache server started');
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  logger.info('Received SIGINT, shutting down gracefully');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  logger.info('Received SIGTERM, shutting down gracefully');
+  process.exit(0);
+});
+
+<% if (includeMetrics) { %>
+// Track active connections
+let connectionCount = 0;
+const originalListen = app.listen;
+app.listen = function(...args) {
+  const server = originalListen.apply(this, args);
+  
+  server.on('connection', (socket) => {
+    connectionCount++;
+    activeConnections.set(connectionCount);
+    
+    socket.on('close', () => {
+      connectionCount--;
+      activeConnections.set(connectionCount);
+    });
+  });
+  
+  return server;
+};
+<% } %>
+
+module.exports = app;

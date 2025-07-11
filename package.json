@@ -1,0 +1,50 @@
+{
+  "name": "nx-custom-cache-server",
+  "version": "1.0.0",
+  "description": "Nx plugin for generating cache servers with GCP and AWS backends",
+  "main": "dist/src/index.js",
+  "type": "commonjs",
+  "keywords": [
+    "nx",
+    "plugin",
+    "cache",
+    "gcp",
+    "aws",
+    "nx-cache",
+    "cloud-storage"
+  ],
+  "author": "Kamalesh D <kkamalesh117@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kamalesh-Seervi/nx-custom-cache-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Kamalesh-Seervi/nx-custom-cache-server/issues"
+  },
+  "homepage": "https://github.com/Kamalesh-Seervi/nx-custom-cache-server#readme",
+  "peerDependencies": {
+    "@nx/devkit": ">=16.0.0"
+  },
+  "dependencies": {
+    "@nx/devkit": "^18.0.0",
+    "tslib": "^2.6.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "lint": "echo 'Linting passed - no linter configured'",
+    "test": "echo 'No tests specified'",
+    "prepublishOnly": "npm run clean && npm run build",
+    "postbuild": "cp -r src/generators/init/files-* dist/generators/init/"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.13",
+    "typescript": "~5.8.3"
+  },
+  "nx": {
+    "name": "nx-cache-server"
+  },
+  "generators": "./generators.json",
+  "executors": "./executors.json"
+}

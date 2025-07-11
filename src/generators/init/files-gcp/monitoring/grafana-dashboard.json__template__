@@ -1,0 +1,93 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "<%= className %> Cache Server Dashboard",
+    "tags": ["nx-cache", "<%= provider %>"],
+    "style": "dark",
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Request Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[5m])",
+            "legendFormat": "{{method}} {{route}} {{status_code}}"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Request Duration",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "95th percentile"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Cache Operations",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(cache_operations_total[5m])",
+            "legendFormat": "{{operation}} {{status}}"
+          }
+        ]
+      }<% if (provider === 'gcp') { %>,
+      {
+        "id": 4,
+        "title": "GCS Operations",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(gcs_operations_total[5m])",
+            "legendFormat": "{{operation}} {{status}}"
+          }
+        ]
+      }<% } else { %>,
+      {
+        "id": 4,
+        "title": "S3 Operations", 
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(s3_operations_total[5m])",
+            "legendFormat": "{{operation}} {{status}}"
+          }
+        ]
+      }<% } %>,
+      {
+        "id": 5,
+        "title": "Error Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(errors_total[5m])",
+            "legendFormat": "{{error_type}} {{endpoint}}"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Active Connections",
+        "type": "singlestat",
+        "targets": [
+          {
+            "expr": "active_connections_total",
+            "legendFormat": "Connections"
+          }
+        ]
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "refresh": "10s"
+  }
+}

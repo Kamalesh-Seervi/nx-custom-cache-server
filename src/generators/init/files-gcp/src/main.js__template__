@@ -1,0 +1,521 @@
+const express = require('express');<% if (includeMetrics) { %>
+const promClient = require('prom-client');<% } %>
+const pino = require('pino');
+const { Storage } = require('@google-cloud/storage');
+
+// Initialize logger
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  transport: {
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      translateTime: 'SYS:standard',
+    }
+  }
+});
+
+<% if (includeMetrics) { %>
+// Initialize Prometheus metrics
+const register = promClient.register;
+promClient.collectDefaultMetrics({ register });
+
+// Custom metrics
+const httpRequestDuration = new promClient.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'Duration of HTTP requests in seconds',
+  labelNames: ['method', 'route', 'status_code'],
+  buckets: [0.1, 0.3, 0.5, 0.7, 1, 3, 5, 7, 10]
+});
+
+const httpRequestsTotal = new promClient.Counter({
+  name: 'http_requests_total',
+  help: 'Total number of HTTP requests',
+  labelNames: ['method', 'route', 'status_code']
+});
+
+const cacheOperationsTotal = new promClient.Counter({
+  name: 'cache_operations_total',
+  help: 'Total number of cache operations',
+  labelNames: ['operation', 'status']
+});
+
+const cacheArtifactSize = new promClient.Histogram({
+  name: 'cache_artifact_size_bytes',
+  help: 'Size of cache artifacts in bytes',
+  labelNames: ['operation'],
+  buckets: [1024, 10240, 102400, 1048576, 10485760, 104857600, 1073741824]
+});
+
+const authenticationAttempts = new promClient.Counter({
+  name: 'authentication_attempts_total',
+  help: 'Total number of authentication attempts',
+  labelNames: ['status']
+});
+
+const gcsOperations = new promClient.Counter({
+  name: 'gcs_operations_total',
+  help: 'Total number of Google Cloud Storage operations',
+  labelNames: ['operation', 'status']
+});
+
+const errorCounter = new promClient.Counter({
+  name: 'errors_total',
+  help: 'Total number of errors',
+  labelNames: ['error_type', 'endpoint']
+});
+
+const activeConnections = new promClient.Gauge({
+  name: 'active_connections_total',
+  help: 'Number of active connections'
+});
+
+const concurrentOperations = new promClient.Gauge({
+  name: 'concurrent_operations_total',
+  help: 'Number of concurrent cache operations',
+  labelNames: ['operation']
+});
+
+const gcsLatency = new promClient.Histogram({
+  name: 'gcs_operation_duration_seconds',
+  help: 'Duration of GCS operations in seconds',
+  labelNames: ['operation'],
+  buckets: [0.1, 0.5, 1, 2, 5, 10, 30]
+});
+
+// Register metrics
+[
+  httpRequestDuration,
+  httpRequestsTotal,
+  cacheOperationsTotal,
+  cacheArtifactSize,
+  authenticationAttempts,
+  gcsOperations,
+  errorCounter,
+  activeConnections,
+  concurrentOperations,
+  gcsLatency
+].forEach(metric => register.registerMetric(metric));
+<% } %>
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Environment variables
+const NX_CACHE_ACCESS_TOKEN = process.env.NX_CACHE_ACCESS_TOKEN;
+const GOOGLE_CLOUD_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT_ID;
+const GCS_BUCKET_NAME = process.env.GCS_BUCKET_NAME;
+
+// Middleware
+app.use('/v1/cache', express.raw({ 
+  type: 'application/octet-stream', 
+  limit: '1gb' 
+}));
+
+<% if (includeMetrics) { %>
+// Request logging and metrics middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const route = req.route ? req.route.path : req.path;
+    const statusCode = res.statusCode.toString();
+    
+    httpRequestDuration
+      .labels(req.method, route, statusCode)
+      .observe(duration / 1000);
+    
+    httpRequestsTotal
+      .labels(req.method, route, statusCode)
+      .inc();
+    
+    logger.info({
+      method: req.method,
+      url: req.url,
+      status: res.statusCode,
+      duration: `${duration}ms`,
+      userAgent: req.get('User-Agent')
+    }, 'Request completed');
+  });
+  
+  next();
+});
+<% } %>
+
+// Initialize Google Cloud Storage
+let storage;
+let bucket;
+
+try {
+  const storageOptions = {
+    projectId: GOOGLE_CLOUD_PROJECT_ID,
+  };
+
+  const GOOGLE_CLOUD_KEY_FILE = process.env.GOOGLE_CLOUD_KEY_FILE;
+  if (GOOGLE_CLOUD_KEY_FILE) {
+    storageOptions.keyFilename = GOOGLE_CLOUD_KEY_FILE;
+    logger.info('Using Google Cloud key file for authentication');
+  } else {
+    logger.info('Using Application Default Credentials for Google Cloud authentication');
+  }
+
+  storage = new Storage(storageOptions);
+  bucket = storage.bucket(GCS_BUCKET_NAME);
+  
+  logger.info({ 
+    projectId: GOOGLE_CLOUD_PROJECT_ID, 
+    bucketName: GCS_BUCKET_NAME 
+  }, 'Google Cloud Storage initialized');
+} catch (error) {
+  logger.error({ error: error.message }, 'Failed to initialize Google Cloud Storage');
+  process.exit(1);
+}
+
+// Authentication middleware
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {<% if (includeMetrics) { %>
+    authenticationAttempts.labels('unauthorized').inc();
+    errorCounter.labels('auth_missing_token', req.path).inc();<% } %>
+    
+    logger.warn({ 
+      ip: req.ip, 
+      url: req.url 
+    }, 'Unauthorized access attempt - missing or invalid bearer token');
+    
+    return res.status(401)
+      .type('text/plain')
+      .send('Unauthorized');
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  if (token !== NX_CACHE_ACCESS_TOKEN) {<% if (includeMetrics) { %>
+    authenticationAttempts.labels('forbidden').inc();
+    errorCounter.labels('auth_invalid_token', req.path).inc();<% } %>
+    
+    logger.warn({ 
+      ip: req.ip, 
+      url: req.url 
+    }, 'Access forbidden - invalid token');
+    
+    return res.status(403)
+      .type('text/plain')
+      .send('Access forbidden');
+  }
+
+<% if (includeMetrics) { %>  authenticationAttempts.labels('success').inc();<% } %>
+  next();
+};
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200)
+    .type('text/plain')
+    .send('OK');
+});
+
+<% if (includeMetrics) { %>
+// Metrics endpoint
+app.get('/metrics', async (req, res) => {
+  try {
+    res.set('Content-Type', register.contentType);
+    res.end(await register.metrics());
+  } catch (error) {
+    res.status(500).end(error);
+  }
+});
+<% } %>
+
+// PUT /v1/cache/:hash - upload cache artifact
+app.put('/v1/cache/:hash', authenticateToken, async (req, res) => {
+  const hash = req.params.hash;
+  const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
+  logger.info({ 
+    requestId, 
+    hash, 
+    contentLength: req.get('content-length') 
+  }, 'Starting cache upload');
+
+<% if (includeMetrics) { %>  cacheOperationsTotal.labels('upload', 'started').inc();
+  concurrentOperations.labels('upload').inc();<% } %>
+
+  try {
+    const file = bucket.file(hash);
+
+    // Check if file already exists
+    try {<% if (includeMetrics) { %>
+      gcsOperations.labels('exists_check', 'started').inc();
+      const existsStartTime = Date.now();<% } %>
+      const [exists] = await file.exists();<% if (includeMetrics) { %>
+      gcsLatency.labels('exists_check').observe((Date.now() - existsStartTime) / 1000);
+      gcsOperations.labels('exists_check', 'success').inc();<% } %>
+      
+      if (exists) {<% if (includeMetrics) { %>
+        cacheOperationsTotal.labels('upload', 'conflict').inc();
+        errorCounter.labels('cache_exists', '/v1/cache/:hash').inc();<% } %>
+        
+        logger.warn({ requestId, hash }, 'Attempt to override existing cache record');
+        return res.status(409)
+          .type('text/plain')
+          .send('Cannot override an existing record');
+      }
+    } catch (error) {<% if (includeMetrics) { %>
+      gcsOperations.labels('exists_check', 'error').inc();
+      errorCounter.labels('gcs_exists_check', '/v1/cache/:hash').inc();<% } %>
+      
+      logger.error({ 
+        requestId, 
+        hash, 
+        error: error.message 
+      }, 'Error checking file existence');
+      
+      return res.status(500)
+        .type('text/plain')
+        .send('Internal server error');
+    }
+
+    // Validate request body
+    if (!req.body || req.body.length === 0) {<% if (includeMetrics) { %>
+      cacheOperationsTotal.labels('upload', 'empty_body').inc();
+      errorCounter.labels('empty_body', '/v1/cache/:hash').inc();<% } %>
+      
+      logger.warn({ requestId, hash }, 'Empty request body');
+      return res.status(400)
+        .type('text/plain')
+        .send('Request body cannot be empty');
+    }
+
+<% if (includeMetrics) { %>    // Record artifact size
+    cacheArtifactSize.labels('upload').observe(req.body.length);<% } %>
+
+    // Upload to GCS
+    try {<% if (includeMetrics) { %>
+      gcsOperations.labels('upload', 'started').inc();
+      const uploadStartTime = Date.now();<% } %>
+      
+      await file.save(req.body, {
+        metadata: {
+          contentType: 'application/octet-stream',
+          cacheControl: 'public, max-age=31536000',
+        },
+        resumable: req.body.length > 5 * 1024 * 1024,
+      });
+
+<% if (includeMetrics) { %>      gcsLatency.labels('upload').observe((Date.now() - uploadStartTime) / 1000);
+      gcsOperations.labels('upload', 'success').inc();
+      cacheOperationsTotal.labels('upload', 'success').inc();<% } %>
+
+      logger.info({ 
+        requestId, 
+        hash, 
+        size: req.body.length 
+      }, 'Cache artifact uploaded successfully');
+
+      return res.status(202)
+        .type('text/plain')
+        .send('Successfully uploaded');
+    } catch (error) {<% if (includeMetrics) { %>
+      gcsOperations.labels('upload', 'error').inc();
+      cacheOperationsTotal.labels('upload', 'error').inc();
+      errorCounter.labels('gcs_upload', '/v1/cache/:hash').inc();<% } %>
+      
+      logger.error({ 
+        requestId, 
+        hash, 
+        error: error.message
+      }, 'Upload error');
+      
+      return res.status(500)
+        .type('text/plain')
+        .send('Internal server error');
+    }
+  } catch (error) {<% if (includeMetrics) { %>
+    cacheOperationsTotal.labels('upload', 'unexpected_error').inc();
+    errorCounter.labels('unexpected_upload', '/v1/cache/:hash').inc();<% } %>
+    
+    logger.error({ 
+      requestId, 
+      hash, 
+      error: error.message
+    }, 'Unexpected upload error');
+    
+    return res.status(500)
+      .type('text/plain')
+      .send('Internal server error');
+  } finally {<% if (includeMetrics) { %>
+    concurrentOperations.labels('upload').dec();<% } %>
+  }
+});
+
+// GET /v1/cache/:hash - download cache artifact
+app.get('/v1/cache/:hash', authenticateToken, async (req, res) => {
+  const hash = req.params.hash;
+  const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
+  logger.info({ requestId, hash }, 'Starting cache download');
+
+<% if (includeMetrics) { %>  cacheOperationsTotal.labels('download', 'started').inc();
+  concurrentOperations.labels('download').inc();<% } %>
+
+  try {
+    const file = bucket.file(hash);
+
+    // Check if file exists<% if (includeMetrics) { %>
+    gcsOperations.labels('exists_check', 'started').inc();
+    const existsStartTime = Date.now();<% } %>
+    const [exists] = await file.exists();<% if (includeMetrics) { %>
+    gcsLatency.labels('exists_check').observe((Date.now() - existsStartTime) / 1000);
+    gcsOperations.labels('exists_check', 'success').inc();<% } %>
+    
+    if (!exists) {<% if (includeMetrics) { %>
+      cacheOperationsTotal.labels('download', 'not_found').inc();<% } %>
+      
+      logger.info({ requestId, hash }, 'Cache record not found');
+      return res.status(404)
+        .type('text/plain')
+        .send('The record was not found');
+    }
+
+    // Stream file
+    const stream = file.createReadStream();
+    const chunks = [];
+
+    stream.on('data', (chunk) => {
+      chunks.push(chunk);
+    });
+
+    stream.on('end', () => {
+      const buffer = Buffer.concat(chunks);
+      
+<% if (includeMetrics) { %>      cacheArtifactSize.labels('download').observe(buffer.length);
+      cacheOperationsTotal.labels('download', 'success').inc();<% } %>
+      
+      logger.info({ 
+        requestId, 
+        hash, 
+        size: buffer.length 
+      }, 'Cache artifact downloaded successfully');
+
+      res.set({
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': buffer.length,
+        'Cache-Control': 'public, max-age=31536000'
+      });
+
+      res.send(buffer);
+    });
+
+    stream.on('error', (streamError) => {<% if (includeMetrics) { %>
+      cacheOperationsTotal.labels('download', 'stream_error').inc();
+      errorCounter.labels('stream_error', '/v1/cache/:hash').inc();<% } %>
+      
+      logger.error({ 
+        requestId, 
+        hash, 
+        error: streamError.message 
+      }, 'Stream error');
+      
+      if (!res.headersSent) {
+        res.status(500)
+          .type('text/plain')
+          .send('Internal server error');
+      }
+    });
+  } catch (error) {<% if (includeMetrics) { %>
+    cacheOperationsTotal.labels('download', 'unexpected_error').inc();
+    errorCounter.labels('unexpected_download', '/v1/cache/:hash').inc();<% } %>
+    
+    logger.error({ 
+      requestId, 
+      hash, 
+      error: error.message
+    }, 'Unexpected download error');
+    
+    return res.status(500)
+      .type('text/plain')
+      .send('Internal server error');
+  } finally {<% if (includeMetrics) { %>
+    concurrentOperations.labels('download').dec();<% } %>
+  }
+});
+
+// Error handlers
+app.use((err, req, res, next) => {
+  const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
+<% if (includeMetrics) { %>  errorCounter.labels('unhandled_error', req.path).inc();<% } %>
+  
+  logger.error({ 
+    requestId,
+    error: err.message,
+    stack: err.stack,
+    url: req.url,
+    method: req.method
+  }, 'Unhandled error');
+  
+  if (!res.headersSent) {
+    res.status(500)
+      .type('text/plain')
+      .send('Internal Server Error');
+  }
+});
+
+app.use((req, res) => {
+  logger.warn({ 
+    url: req.url, 
+    method: req.method,
+    ip: req.ip 
+  }, 'Route not found');
+  
+  res.status(404)
+    .type('text/plain')
+    .send('Not Found');
+});
+
+// Start server
+app.listen(PORT, () => {
+  logger.info({ 
+    port: PORT,
+    projectId: GOOGLE_CLOUD_PROJECT_ID,
+    bucketName: GCS_BUCKET_NAME,
+    nodeEnv: process.env.NODE_ENV || 'development'
+  }, '<%= className %> cache server started');
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  logger.info('Received SIGINT, shutting down gracefully');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  logger.info('Received SIGTERM, shutting down gracefully');
+  process.exit(0);
+});
+
+<% if (includeMetrics) { %>
+// Track active connections
+let connectionCount = 0;
+const originalListen = app.listen;
+app.listen = function(...args) {
+  const server = originalListen.apply(this, args);
+  
+  server.on('connection', (socket) => {
+    connectionCount++;
+    activeConnections.set(connectionCount);
+    
+    socket.on('close', () => {
+      connectionCount--;
+      activeConnections.set(connectionCount);
+    });
+  });
+  
+  return server;
+};
+<% } %>
+
+module.exports = app;

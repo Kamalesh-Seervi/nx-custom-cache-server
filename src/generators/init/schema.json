@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/schema",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The name of the cache server project",
+      "default": "nx-cache-server",
+      "$default": {
+        "$source": "argv",
+        "index": 0
+      },
+      "x-prompt": "What is the name of your cache server project?"
+    },
+    "provider": {
+      "type": "string",
+      "description": "Cloud provider for cache storage",
+      "enum": ["gcp", "aws"],
+      "default": "gcp",
+      "x-prompt": {
+        "message": "Which cloud provider would you like to use?",
+        "type": "list",
+        "items": [
+          { "value": "gcp", "label": "Google Cloud Platform (GCS)" },
+          { "value": "aws", "label": "Amazon Web Services (S3)" }
+        ]
+      }
+    },
+    "directory": {
+      "type": "string",
+      "description": "The directory where the cache server will be created",
+      "default": ""
+    },
+    "tags": {
+      "type": "string",
+      "description": "Add tags to the project (used for linting)",
+      "default": ""
+    },
+    "skipFormat": {
+      "description": "Skip formatting files.",
+      "type": "boolean",
+      "default": false
+    },
+    "skipPackageJson": {
+      "type": "boolean",
+      "default": false,
+      "description": "Do not add dependencies to `package.json`."
+    },
+    "includeDocker": {
+      "type": "boolean",
+      "default": true,
+      "description": "Include Docker configuration files",
+      "x-prompt": "Would you like to include Docker configuration?"
+    },
+    "includeMetrics": {
+      "type": "boolean",
+      "default": true,
+      "description": "Include Prometheus metrics endpoint",
+      "x-prompt": "Would you like to include Prometheus metrics?"
+    }
+  },
+  "required": ["name", "provider"],
+  "additionalProperties": false
+}

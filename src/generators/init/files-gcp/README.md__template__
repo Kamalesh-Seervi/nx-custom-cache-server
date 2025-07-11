@@ -1,0 +1,224 @@
+# <%= className %> Cache Server
+
+<% if (provider === 'gcp') { %>A high-performance Nx cache server with Google Cloud Storage backend.<% } else { %>A high-performance Nx cache server with AWS S3 backend.<% } %><% if (includeMetrics) { %> Includes Prometheus metrics for monitoring and observability.<% } %>
+
+## Features
+
+- ✅ Nx cache API compatible
+- 🚀 High-performance streaming
+<% if (provider === 'gcp') { %>- ☁️ Google Cloud Storage backend<% } else { %>- ☁️ AWS S3 backend<% } %>
+- 🔐 Bearer token authentication
+- 📊 Structured logging with Pino<% if (includeMetrics) { %>
+- 📈 Prometheus metrics endpoint<% } %><% if (includeDocker) { %>
+- 🐳 Docker ready<% } %>
+- 🔄 Graceful shutdown
+- ⚡ Express.js based
+
+## Quick Start
+
+### 1. Install Dependencies
+
+```bash
+npm install
+```
+
+### 2. Environment Variables
+
+<% if (provider === 'gcp') { %>Create a `.env` file with the following variables:
+
+```env
+# Required
+NX_CACHE_ACCESS_TOKEN=your-secure-token-here
+GOOGLE_CLOUD_PROJECT_ID=your-gcp-project-id
+GCS_BUCKET_NAME=your-gcs-bucket-name
+
+# Optional
+PORT=3000
+LOG_LEVEL=info
+GOOGLE_CLOUD_KEY_FILE=/path/to/service-account.json
+```
+
+#### Google Cloud Authentication
+
+You can authenticate using either:
+
+1. **Service Account Key File** (recommended for local development):
+   ```bash
+   export GOOGLE_CLOUD_KEY_FILE=/path/to/your/service-account.json
+   ```
+
+2. **Application Default Credentials** (recommended for production):
+   ```bash
+   gcloud auth application-default login
+   ```<% } else { %>Create a `.env` file with the following variables:
+
+```env
+# Required
+NX_CACHE_ACCESS_TOKEN=your-secure-token-here
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=your-access-key
+AWS_SECRET_ACCESS_KEY=your-secret-key
+S3_BUCKET_NAME=your-bucket-name
+
+# Optional
+PORT=3000
+LOG_LEVEL=info
+S3_ENDPOINT_URL=https://s3.us-east-1.amazonaws.com
+```
+
+#### AWS Authentication
+
+You can authenticate using:
+
+1. **Environment Variables** (as shown above)
+2. **AWS Profile**:
+   ```bash
+   export AWS_PROFILE=your-profile-name
+   ```
+3. **IAM Role** (when running on EC2/ECS)<% } %>
+
+### 3. Start the Server
+
+```bash
+# Development (with auto-reload)
+npm run dev
+
+# Production
+npm start
+```
+
+## API Endpoints
+
+### Health Check
+```
+GET /health
+```
+Returns `200 OK` if the server is healthy.
+
+<% if (includeMetrics) { %>### Metrics
+```
+GET /metrics
+```
+Returns Prometheus metrics in text format.
+
+<% } %>### Cache Upload
+```
+PUT /v1/cache/:hash
+Authorization: Bearer <token>
+Content-Type: application/octet-stream
+```
+Upload cache artifact. Returns `409` if hash already exists.
+
+### Cache Download
+```
+GET /v1/cache/:hash
+Authorization: Bearer <token>
+```
+Download cache artifact. Returns `404` if not found.
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `NX_CACHE_ACCESS_TOKEN` | Yes | - | Bearer token for authentication |<% if (provider === 'gcp') { %>
+| `GOOGLE_CLOUD_PROJECT_ID` | Yes | - | GCP Project ID |
+| `GCS_BUCKET_NAME` | Yes | - | Google Cloud Storage bucket name |
+| `GOOGLE_CLOUD_KEY_FILE` | No | - | Path to service account JSON file |<% } else { %>
+| `AWS_REGION` | Yes | `us-east-1` | AWS region |
+| `AWS_ACCESS_KEY_ID` | Yes | - | AWS access key |
+| `AWS_SECRET_ACCESS_KEY` | Yes | - | AWS secret key |
+| `S3_BUCKET_NAME` | Yes | - | S3 bucket name |
+| `S3_ENDPOINT_URL` | No | - | Custom S3 endpoint URL |<% } %>
+| `PORT` | No | `3000` | Server port |
+| `LOG_LEVEL` | No | `info` | Log level (trace, debug, info, warn, error) |
+| `NODE_ENV` | No | `development` | Node environment |
+
+<% if (includeMetrics) { %>## Monitoring
+
+The server exposes Prometheus metrics at `/metrics` endpoint:
+
+- **HTTP Metrics**: Request duration, request count, status codes
+- **Cache Metrics**: Upload/download operations, artifact sizes
+- **Authentication Metrics**: Success/failure counts<% if (provider === 'gcp') { %>
+- **GCS Metrics**: Operation latencies, success/failure rates<% } else { %>
+- **S3 Metrics**: Operation latencies, success/failure rates<% } %>
+- **System Metrics**: Memory usage, active connections
+- **Error Metrics**: Error counts by type and endpoint
+
+### Grafana Dashboard
+
+A sample Grafana dashboard is available in the `monitoring/` directory.
+
+<% } %>## Usage with Nx
+
+Configure your `nx.json` to use this cache server:
+
+```json
+{
+  "tasksRunnerOptions": {
+    "default": {
+      "@nx/nx/tasks-runners/default": {
+        "remoteCache": {
+          "enabled": true,
+          "url": "http://localhost:3000",
+          "options": {
+            "accessToken": "your-secure-token-here"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+<% if (includeDocker) { %>## Docker
+
+### Build Image
+```bash
+docker build -t <%= name %> .
+```
+
+### Run Container
+```bash
+docker run -p 3000:3000 \
+  -e NX_CACHE_ACCESS_TOKEN=your-token \<% if (provider === 'gcp') { %>
+  -e GOOGLE_CLOUD_PROJECT_ID=your-project \
+  -e GCS_BUCKET_NAME=your-bucket \<% } else { %>
+  -e AWS_REGION=us-east-1 \
+  -e AWS_ACCESS_KEY_ID=your-key \
+  -e AWS_SECRET_ACCESS_KEY=your-secret \
+  -e S3_BUCKET_NAME=your-bucket \<% } %>
+  <%= name %>
+```
+
+<% } %>## Development
+
+### Project Structure
+```
+src/
+├── main.js          # Main server file
+├── package.json     # Dependencies and scripts
+└── README.md        # This file
+<% if (includeDocker) %>Dockerfile          # Docker configuration
+<% } %>.env.example        # Environment template
+```
+
+### Scripts
+- `npm start` - Start production server
+- `npm run dev` - Start development server with auto-reload
+
+## Security Considerations
+
+1. **Use strong tokens**: Generate cryptographically secure tokens
+2. **Network security**: Use HTTPS in production
+3. **Access control**: Restrict access to the cache server<% if (provider === 'gcp') { %>
+4. **GCS permissions**: Use minimal required permissions
+5. **Service account**: Use dedicated service accounts<% } else { %>
+4. **S3 permissions**: Use minimal required IAM permissions
+5. **AWS credentials**: Use IAM roles when possible<% } %>
+
+## License
+
+MIT
