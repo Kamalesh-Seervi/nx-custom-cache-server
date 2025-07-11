@@ -1,8 +1,8 @@
 {
   "generators": {
     "init": {
-      "factory": "./src/generators/init/generator",
-      "schema": "./src/generators/init/schema.json",
+      "factory": "./dist/generators/init/generator",
+      "schema": "./dist/generators/init/schema.json",
       "description": "Initialize nx cache server with cloud provider selection"
     }
   }
