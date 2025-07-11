@@ -153,24 +153,11 @@ A sample Grafana dashboard is available in the `monitoring/` directory.
 
 <% } %>## Usage with Nx
 
-Configure your `nx.json` to use this cache server:
+To use this cache server with your Nx workspace, set the following environment variables:
 
-```json
-{
-  "tasksRunnerOptions": {
-    "default": {
-      "@nx/nx/tasks-runners/default": {
-        "remoteCache": {
-          "enabled": true,
-          "url": "http://localhost:3000",
-          "options": {
-            "accessToken": "your-secure-token-here"
-          }
-        }
-      }
-    }
-  }
-}
+```
+NX_SELF_HOSTED_REMOTE_CACHE_SERVER=http://your-server:3000
+NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN=your-secure-token
 ```
 
 <% if (includeDocker) { %>## Docker
