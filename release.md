@@ -1,4 +1,4 @@
-# Release Guide for nx-custom-cache-server
+# Release Guide for nx-cache-server-custom
 
 ## 📦 What gets published to npm registry
 
@@ -77,7 +77,7 @@ npm install --save-dev nx-custom-cache-server
 
 ### 3. User generates server:
 ```bash
-npx nx g nx-custom-cache-server:init my-cache-server
+npx nx g nx-cache-server-custom:init my-cache-server
 ```
 
 ## 🧪 Testing Before Release
@@ -90,7 +90,7 @@ npm run build
 npm pack
 
 # Install local package for testing
-npm install ./nx-custom-cache-server-1.0.0.tgz
+npm install ./nx-cache-server-custom-1.0.0.tgz
 ```
 
 ## 📋 Release Checklist
