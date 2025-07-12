@@ -188,7 +188,7 @@ src/
 ├── main.js          # Main server file
 ├── package.json     # Dependencies and scripts
 └── README.md        # This file
-<% if (includeDocker) %>Dockerfile          # Docker configuration
+<% if (includeDocker) { %>Dockerfile          # Docker configuration
 <% } %>.env.example        # Environment template
 ```
 
