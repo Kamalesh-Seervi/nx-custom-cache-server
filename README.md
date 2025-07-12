@@ -1,4 +1,4 @@
-# nx-cache-server-custom
+# nx-cache-server-custom (nx-cache-server-custom@1.0.2) - Stable
 
 [![npm version](https://badge.fury.io/js/%40nx-cache%2Fserver-plugin.svg)](https://www.npmjs.com/package/nx-cache-server-custom)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
